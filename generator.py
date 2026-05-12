@@ -271,10 +271,11 @@ class PuzzleGenerator:
         sampler = _AdaptiveSampler(d["fill_prob"])
 
         attempt = g1_rej = g2_rej = g3_rej = g4_rej = 0
+        update_interval = 30 - difficulty * 5  # Easy: 25, Extreme: 10
 
         while True:
             attempt += 1
-            if attempt % 25 == 0:
+            if attempt % update_interval == 0:
                 self.status = (
                     f"Searching… attempt {attempt} "
                     f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G4:{g4_rej})"

@@ -169,6 +169,9 @@ class Game:
                     
             elif self.state == STATE_PLAY:
                 self._handle_play(event)
+                
+            elif self.state == STATE_SOLVED:
+                self._handle_solved(event)
 
     def _handle_input(self, event):
             if event.type == pygame.KEYDOWN:
@@ -237,6 +240,14 @@ class Game:
         elif event.type == pygame.MOUSEBUTTONDOWN:
             self._toggle_cell(event.pos)
 
+    def _handle_solved(self, event):
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                self._start_generation()
+            elif event.key == pygame.K_s:
+                self.typed = ""
+                self.state = STATE_COLS
+
     def _update_hover(self, pos):
         mx, my = pos
         gx, gy = self.grid_x, self.grid_y
@@ -265,8 +276,7 @@ class Game:
     def _check_solved(self):
         if self.player == self.puzzle["grid"]:
             self.solved_count += 1
-            self.state = STATE_WAIT
-            self._start_generation()
+            self.state = STATE_SOLVED
 
     # ── Generation ────────────────────────────────────────────────────────────
     def _start_generation(self):
@@ -287,6 +297,9 @@ class Game:
         elif self.state == STATE_PLAY:
             self._draw_hud()
             self._draw_puzzle()
+        elif self.state == STATE_SOLVED:
+            self._draw_hud()
+            self._draw_solved()
 
     # ── Setup screen ──────────────────────────────────────────────────────────
     def _draw_setup(self):
@@ -328,6 +341,16 @@ class Game:
         dots = "." * ((pygame.time.get_ticks() // 400) % 4)
         d = self.font_md.render(dots, True, BLACK)
         self.screen.blit(d, d.get_rect(center=(cx, cy + 36)))
+
+    # ── Solved screen ─────────────────────────────────────────────────────────
+    def _draw_solved(self):
+        cx, cy = WIN_W // 2, WIN_H // 2
+        msg = self.font_lg.render("PUZZLE SOLVED!", True, BLACK)
+        self.screen.blit(msg, msg.get_rect(center=(cx, cy - 50)))
+        hint1 = self.font_md.render("Press SPACE for new puzzle with same settings", True, (80, 80, 80))
+        self.screen.blit(hint1, hint1.get_rect(center=(cx, cy)))
+        hint2 = self.font_md.render("Press S to change dimensions and difficulty", True, (80, 80, 80))
+        self.screen.blit(hint2, hint2.get_rect(center=(cx, cy + 30)))
 
     # ── HUD ───────────────────────────────────────────────────────────────────
     def _draw_hud(self):
