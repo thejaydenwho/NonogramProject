@@ -34,6 +34,7 @@ STATE_SOLVED = "solved"  # brief flash before next puzzle
 class Game:
     def __init__(self):
         pygame.init()
+        pygame.event.set_grab(True)
         self.screen  = pygame.display.set_mode((WIN_W, WIN_H))
         pygame.display.set_caption("Nonogram")
         self.clock   = pygame.time.Clock()
@@ -154,21 +155,42 @@ class Game:
             pygame.SRCALPHA
         )
 
-    # ── Event handling ────────────────────────────────────────────────────────
+        # ── Event handling ────────────────────────────────────────────────────────
     def _handle(self, event):
-        if self.state in (STATE_COLS, STATE_ROWS, STATE_DIFF):
-            self._handle_input(event)
-        elif self.state == STATE_PLAY:
-            self._handle_play(event)
+            # 1. Capture text characters (numbers) using TEXTINPUT
+            if self.state in (STATE_COLS, STATE_ROWS, STATE_DIFF):
+                if event.type == pygame.TEXTINPUT:
+                    if event.text.isdigit():
+                        self.typed += event.text
+                
+                # 2. Capture control keys (Backspace/Enter) using KEYDOWN
+                if event.type == pygame.KEYDOWN:
+                    self._handle_input(event)
+                    
+            elif self.state == STATE_PLAY:
+                self._handle_play(event)
 
     def _handle_input(self, event):
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_BACKSPACE:
-                self.typed = self.typed[:-1]
-            elif event.key == pygame.K_RETURN:
-                self._commit_input()
-            elif event.unicode.isdigit():
-                self.typed += event.unicode
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_BACKSPACE:
+                    self.typed = self.typed[:-1]
+                elif event.key == pygame.K_RETURN:
+                    self._commit_input()
+                
+                # This maps the PHYSICAL keys, ignoring NumLock/Shift/Unicode
+                numbers = {
+                    pygame.K_0: "0", pygame.K_1: "1", pygame.K_2: "2", 
+                    pygame.K_3: "3", pygame.K_4: "4", pygame.K_5: "5", 
+                    pygame.K_6: "6", pygame.K_7: "7", pygame.K_8: "8", 
+                    pygame.K_9: "9",
+                    # Also map the Numpad keys explicitly
+                    pygame.K_KP0: "0", pygame.K_KP1: "1", pygame.K_KP2: "2",
+                    pygame.K_KP3: "3", pygame.K_KP4: "4", pygame.K_KP5: "5",
+                    pygame.K_KP6: "6", pygame.K_KP7: "7", pygame.K_KP8: "8",
+                    pygame.K_KP9: "9"
+                }
+                if event.key in numbers:
+                    self.typed += numbers[event.key]
 
     def _commit_input(self):
         val = self.typed.strip()
@@ -214,9 +236,6 @@ class Game:
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
             self._toggle_cell(event.pos)
-
-        elif event.type == pygame.MOUSELEAVE:
-            self.hover_r = self.hover_c = -1
 
     def _update_hover(self, pos):
         mx, my = pos

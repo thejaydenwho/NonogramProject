@@ -45,7 +45,7 @@ def get_clues(line):
             count = 0
     if count:
         clues.append(count)
-    return clues if clues else [0]
+    return clues # If the list is empty, it returns [], which matches Prolog
 
 def row_clues(grid):
     return [get_clues(row) for row in grid]
