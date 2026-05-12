@@ -50,8 +50,8 @@ DIFFICULTY = {
     },
     4: {
         "name":        "Extreme",
-        "fill_prob":   0.28,
-        "score_lo":    0.72,
+        "fill_prob":   0.35,
+        "score_lo":    0.65,
         "score_hi":    1.00,
         "min_forced":  0.00,
         "max_ambig":   9999,
@@ -174,7 +174,7 @@ def _gate2_python(rc, cc, rows, cols, diff):
         return False
 
     # Score must be in an expanded band (Prolog will tighten it)
-    margin = 0.10
+    margin = 0.20
     if approx_score < d["score_lo"] - margin:
         return False
     if approx_score > d["score_hi"] + margin:
@@ -251,20 +251,25 @@ class PuzzleGenerator:
     def __init__(self):
         self.generating = False
         self.status     = "Idle"
-        self._thread    = None
+        self.found      = False
+        self._threads   = []
 
     def generate(self, rows, cols, difficulty, callback):
         if self.generating:
             return
         self.generating = True
+        self.found = False
         self.status = f"Generating {DIFFICULTY[difficulty]['name']} puzzle…"
-        t = threading.Thread(
-            target=self._run,
-            args=(rows, cols, difficulty, callback),
-            daemon=True,
-        )
-        t.start()
-        self._thread = t
+        num_threads = 3  # Parallel threads for faster generation
+        self._threads = []
+        for _ in range(num_threads):
+            t = threading.Thread(
+                target=self._run,
+                args=(rows, cols, difficulty, callback),
+                daemon=True,
+            )
+            t.start()
+            self._threads.append(t)
 
     def _run(self, rows, cols, difficulty, callback):
         d       = DIFFICULTY[difficulty]
@@ -274,6 +279,8 @@ class PuzzleGenerator:
         update_interval = 30 - difficulty * 5  # Easy: 25, Extreme: 10
 
         while True:
+            if self.found:
+                return
             attempt += 1
             if attempt % update_interval == 0:
                 self.status = (
@@ -308,24 +315,26 @@ class PuzzleGenerator:
                 continue
 
             # ── All gates passed ──────────────────────────────────────────
-            puzzle = {
-                "grid":       grid,
-                "row_clues":  rc,
-                "col_clues":  cc,
-                "rows":       rows,
-                "cols":       cols,
-                "difficulty": difficulty,
-                "diff_name":  d["name"],
-                "attempts":   attempt,
-                "g1_rejected": g1_rej,
-                "g2_rejected": g2_rej,
-                "g3_rejected": g3_rej,
-                "g4_rejected": g4_rej,
-            }
-            self.status = (
-                f"Ready! {d['name']} — {attempt} attempts "
-                f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G4:{g4_rej})"
-            )
-            self.generating = False
-            callback(puzzle)
+            if not self.found:
+                self.found = True
+                puzzle = {
+                    "grid":       grid,
+                    "row_clues":  rc,
+                    "col_clues":  cc,
+                    "rows":       rows,
+                    "cols":       cols,
+                    "difficulty": difficulty,
+                    "diff_name":  d["name"],
+                    "attempts":   attempt,
+                    "g1_rejected": g1_rej,
+                    "g2_rejected": g2_rej,
+                    "g3_rejected": g3_rej,
+                    "g4_rejected": g4_rej,
+                }
+                self.status = (
+                    f"Ready! {d['name']} — {attempt} attempts "
+                    f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G4:{g4_rej})"
+                )
+                self.generating = False
+                callback(puzzle)
             return

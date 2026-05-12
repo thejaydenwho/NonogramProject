@@ -1,29 +1,23 @@
 # NonogramProject
 To run the nonagram project on vnc.html first run in bash:
 
-# clean old processes
-pkill Xvfb
-pkill x11vnc
-pkill websockify
-
-# remove stale lock
+# Clean up everything
+pkill -9 python; pkill -9 swipl; pkill Xvfb; pkill x11vnc; pkill websockify
 rm -f /tmp/.X99-lock
 
-# start fake display
+# Start Fake Display
 Xvfb :99 -screen 0 1280x800x24 &
+sleep 2
 
-# use that display
+# Start VNC Server in the background
 export DISPLAY=:99
+x11vnc -display :99 -nopw -listen localhost -xkb -bg
 
-# start VNC server
-x11vnc -display :99 -nopw -listen localhost -xkb
-
-second run:
-
+# Start the Proxy
 ~/noVNC/utils/novnc_proxy --vnc localhost:5900 --listen 6080
 
-open up the vnc html and run:
+afterwards run:
 
 export DISPLAY=:99
-python3 main.py
+python3 -u main.py
 
