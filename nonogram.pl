@@ -36,13 +36,10 @@ apply_clues(Line, [C|Rest]) :-
     ).
 
 %% ── Uniqueness check ──────────────────────────────────────────────────────────
+%% Early termination: fail as soon as we find a second distinct solution
 is_unique(RowClues, ColClues) :-
-    solve_nonogram(RowClues, ColClues, Sol1),
-    !,
-    \+ (
-        solve_nonogram(RowClues, ColClues, Sol2),
-        Sol2 \= Sol1
-    ).
+    findnsols(2, _, solve_nonogram(RowClues, ColClues, _), Sols),
+    length(Sols, 1).
 
 %% ── Count solutions up to Max (for difficulty scoring) ───────────────────────
 count_solutions(RowClues, ColClues, Max, Count) :-

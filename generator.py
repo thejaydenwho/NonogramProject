@@ -14,6 +14,7 @@ import random
 import threading
 import os
 import math
+import signal
 
 # ── Difficulty bands ───────────────────────────────────────────────────────────
 # Each band is defined as a target range for the Prolog difficulty score (0–1)
@@ -25,33 +26,33 @@ import math
 DIFFICULTY = {
     1: {
         "name":        "Easy",
-        "fill_prob":   0.68,       # dense → long runs → high overlap
+        "fill_prob":   0.5,       # dense → long runs → high overlap
         "score_lo":    0.00,
-        "score_hi":    0.28,
+        "score_hi":    0.25,
         # Python pre-filter mirrors (fast approximation of Prolog score)
         "min_forced":  0.48,       # high forced ratio = easy
         "max_ambig":   35,
     },
     2: {
         "name":        "Medium",
-        "fill_prob":   0.52,
+        "fill_prob":   0.45,
         "score_lo":    0.25,
-        "score_hi":    0.52,
+        "score_hi":    0.50,
         "min_forced":  0.22,
         "max_ambig":   90,
     },
     3: {
         "name":        "Difficult",
-        "fill_prob":   0.38,
-        "score_lo":    0.48,
-        "score_hi":    0.76,
+        "fill_prob":   0.4,
+        "score_lo":    0.50,
+        "score_hi":    0.75,
         "min_forced":  0.05,
         "max_ambig":   200,
     },
     4: {
         "name":        "Extreme",
         "fill_prob":   0.35,
-        "score_lo":    0.65,
+        "score_lo":    0.75,
         "score_hi":    1.00,
         "min_forced":  0.00,
         "max_ambig":   9999,
@@ -174,7 +175,24 @@ def _gate2_python(rc, cc, rows, cols, diff):
         return False
 
     # Score must be in an expanded band (Prolog will tighten it)
-    margin = 0.20
+    # For larger grids, tighten the margins to filter more aggressively
+    # For harder difficulties, tighten even more
+    grid_size = rows * cols
+    if diff >= 3:  # Difficult or Extreme — very tight filtering
+        if grid_size <= 25:
+            margin = 0.10
+        elif grid_size <= 49:
+            margin = 0.08
+        else:
+            margin = 0.05
+    else:  # Easy or Medium
+        if grid_size <= 25:
+            margin = 0.20
+        elif grid_size <= 49:
+            margin = 0.15
+        else:
+            margin = 0.10
+    
     if approx_score < d["score_lo"] - margin:
         return False
     if approx_score > d["score_hi"] + margin:
@@ -202,13 +220,22 @@ def _gate3_prolog_score(rc, cc, rows, cols, diff):
             return False
 
 # ── Gate 4: Prolog uniqueness (full solve) ────────────────────────────────────
-def _gate4_unique(rc, cc):
+def _gate4_unique(rc, cc, timeout_ms=1000):
+    """
+    Check uniqueness with adaptive timeout.
+    Returns False if check times out (treat as unique=False to skip this candidate).
+    timeout_ms scales adaptively: larger puzzles get shorter timeouts.
+    """
     with _prolog_lock:
         prolog = _get_prolog()
         try:
-            results = list(prolog.query(f"is_unique({rc},{cc})"))
+            # Use call_with_time_limit for timeout support
+            query = f"call_with_time_limit({timeout_ms / 1000}, is_unique({rc},{cc}))"
+            results = list(prolog.query(query))
             return bool(results)
         except Exception:
+            # Timeout or error — reject this candidate
+            # This includes cases where call_with_time_limit isn't available
             return False
 
 # ── Stats tracker for adaptive fill_prob ──────────────────────────────────────
@@ -260,7 +287,12 @@ class PuzzleGenerator:
         self.generating = True
         self.found = False
         self.status = f"Generating {DIFFICULTY[difficulty]['name']} puzzle…"
-        num_threads = 3  # Parallel threads for faster generation
+        # Scale thread count: larger puzzles + harder difficulties = more threads
+        grid_size = rows * cols
+        base_threads = 3 if grid_size < 36 else 5 if grid_size < 64 else 8
+        # Difficult & Extreme get 50% more threads
+        difficulty_multiplier = 1.5 if difficulty >= 3 else 1.0
+        num_threads = max(base_threads, int(base_threads * difficulty_multiplier))
         self._threads = []
         for _ in range(num_threads):
             t = threading.Thread(
@@ -276,7 +308,30 @@ class PuzzleGenerator:
         sampler = _AdaptiveSampler(d["fill_prob"])
 
         attempt = g1_rej = g2_rej = g3_rej = g4_rej = 0
-        update_interval = 30 - difficulty * 5  # Easy: 25, Extreme: 10
+        update_interval = 5  # Update status every 5 attempts for real-time feedback
+        
+        # Adaptive timeout for Gate 4: larger puzzles + harder difficulties = shorter timeouts
+        grid_size = rows * cols
+        is_hard = difficulty >= 3  # Difficult or Extreme
+        
+        # Skip Gate 3 at lower threshold for hard difficulties
+        skip_gate3 = (grid_size > 100) or (is_hard and grid_size > 49)
+        
+        # Base timeout by grid size
+        if grid_size <= 25:
+            gate4_timeout_ms = 2000
+        elif grid_size <= 49:
+            gate4_timeout_ms = 1500
+        elif grid_size <= 64:
+            gate4_timeout_ms = 1000
+        elif grid_size <= 100:
+            gate4_timeout_ms = 800
+        else:
+            gate4_timeout_ms = 600
+        
+        # Reduce timeout for hard difficulties (they have more candidates to check)
+        if is_hard:
+            gate4_timeout_ms = int(gate4_timeout_ms * 0.7)
 
         while True:
             if self.found:
@@ -304,13 +359,14 @@ class PuzzleGenerator:
                 continue
             sampler.nudge(True)
 
-            # Gate 3 — Prolog difficulty score (fast, no solving)
-            if not _gate3_prolog_score(rc, cc, rows, cols, difficulty):
-                g3_rej += 1
-                continue
+            # Gate 3 — Prolog difficulty score (skip for very large grids or hard difficulties)
+            if not skip_gate3:
+                if not _gate3_prolog_score(rc, cc, rows, cols, difficulty):
+                    g3_rej += 1
+                    continue
 
-            # Gate 4 — Prolog uniqueness (slow, full solve)
-            if not _gate4_unique(rc, cc):
+            # Gate 4 — Prolog uniqueness (slow, full solve with adaptive timeout)
+            if not _gate4_unique(rc, cc, timeout_ms=gate4_timeout_ms):
                 g4_rej += 1
                 continue
 
