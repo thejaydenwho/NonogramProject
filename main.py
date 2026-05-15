@@ -10,6 +10,7 @@ import sys
 import pygame
 import threading
 from generator import PuzzleGenerator, DIFFICULTY
+import solver
 
 # ── Colours ────────────────────────────────────────────────────────────────────
 WHITE      = (255, 255, 255)
@@ -28,6 +29,7 @@ STATE_ROWS   = "rows"
 STATE_DIFF   = "diff"
 STATE_WAIT   = "wait"    # generating in background
 STATE_PLAY   = "play"
+STATE_SOLVER = "solver"
 STATE_SOLVED = "solved"  # brief flash before next puzzle
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -56,6 +58,12 @@ class Game:
 
         self.solved_count = 0
 
+        self.solver = None
+        self.solver_paused = False
+        self.solver_step_count = 0
+        self.solver_last_changes = []
+        self.solver_status = ""
+
         # layout (computed once puzzle is known)
         self.cell_px  = 0
         self.grid_x   = 0
@@ -76,6 +84,7 @@ class Game:
     def run(self):
         while True:
             self._check_pending()
+            self._solver_step()
             for event in pygame.event.get():
                 if event.type == pygame.QUIT:
                     pygame.quit(); sys.exit()
@@ -101,6 +110,11 @@ class Game:
         rows = puzzle["rows"]
         cols = puzzle["cols"]
         self.player = [[0]*cols for _ in range(rows)]
+        self.solver = None
+        self.solver_paused = False
+        self.solver_step_count = 0
+        self.solver_last_changes = []
+        self.solver_status = ""
         self._compute_layout(rows, cols)
         self.state = STATE_PLAY
 
@@ -232,13 +246,23 @@ class Game:
     def _handle_play(self, event):
         if event.type == pygame.KEYDOWN:
             if event.key == pygame.K_SPACE:
+                if self.solver is None:
+                    self._start_solver()
+                else:
+                    self.solver_paused = not self.solver_paused
+                    self.solver_status = "Paused" if self.solver_paused else "Running"
+            elif event.key == pygame.K_n:
                 self._start_generation()
+            elif event.key == pygame.K_s:
+                if self.solver is None:
+                    self._start_solver()
 
         elif event.type == pygame.MOUSEMOTION:
             self._update_hover(event.pos)
 
         elif event.type == pygame.MOUSEBUTTONDOWN:
-            self._toggle_cell(event.pos)
+            if self.solver is None:
+                self._toggle_cell(event.pos)
 
     def _handle_solved(self, event):
         if event.type == pygame.KEYDOWN:
@@ -277,6 +301,38 @@ class Game:
         if self.player == self.puzzle["grid"]:
             self.solved_count += 1
             self.state = STATE_SOLVED
+
+    def _start_solver(self):
+        if not self.puzzle:
+            return
+        self.solver = solver.solve_steps(
+            self.puzzle["row_clues"],
+            self.puzzle["col_clues"],
+            self.player,
+        )
+        self.solver_paused = False
+        self.solver_step_count = 0
+        self.solver_last_changes = []
+        self.solver_status = "Running"
+
+    def _solver_step(self):
+        if self.solver is None or self.solver_paused or self.state != STATE_PLAY:
+            return
+        try:
+            step = next(self.solver)
+            self.player = step["board"]
+            self.solver_step_count = step["step"]
+            self.solver_last_changes = step["changed"]
+            self.solver_status = (
+                f"{step['line_type'] or 'Init'} {step['line_index']}"
+            )
+            self._check_solved()
+        except StopIteration:
+            self.solver = None
+            if self.player == self.puzzle["grid"]:
+                self.solver_status = "Solver completed"
+            else:
+                self.solver_status = "Solver stuck"
 
     # ── Generation ────────────────────────────────────────────────────────────
     def _start_generation(self):
@@ -364,8 +420,13 @@ class Game:
             s = self.font_sm.render(size_txt, True, (100, 100, 100))
             self.screen.blit(s, (10, 28))
 
+        if self.solver is not None:
+            status_txt = f"Solver: {self.solver_status or 'Running'}  Step: {self.solver_step_count}"
+            s2 = self.font_sm.render(status_txt, True, (0, 80, 0))
+            self.screen.blit(s2, (10, 48))
+
         # Controls hint
-        ctrl = self.font_xs.render("Space = new puzzle", True, (160, 160, 160))
+        ctrl = self.font_xs.render("Space = start/pause solve, N = new puzzle", True, (160, 160, 160))
         self.screen.blit(ctrl, (WIN_W - ctrl.get_width() - 8, 8))
 
     # ── Puzzle rendering ──────────────────────────────────────────────────────
@@ -391,8 +452,14 @@ class Game:
         for r in range(rows):
             for c in range(cols):
                 rect = pygame.Rect(gx + c*cp, gy + r*cp, cp, cp)
-                if self.player[r][c]:
+                if self.player[r][c] == solver.FILLED:
                     pygame.draw.rect(self.screen, LIGHT_GREY, rect)
+
+        # Highlight newly solved cells
+        if self.solver_last_changes:
+            for r, c, _ in self.solver_last_changes:
+                rect = pygame.Rect(gx + c*cp, gy + r*cp, cp, cp)
+                pygame.draw.rect(self.screen, (140, 220, 140), rect, 2)
 
         # --- 3. Grid lines ---
         for r in range(rows + 1):
