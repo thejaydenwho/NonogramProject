@@ -73,11 +73,131 @@ def _get_prolog():
     return _prolog
 
 # ── Grid helpers ───────────────────────────────────────────────────────────────
+def _random_clue_list(length, fill_prob):
+    if random.random() < 0.05:
+        return []
+    if random.random() < 0.05:
+        return [length]
+
+    target_filled = int(round(random.gauss(fill_prob * length, max(1, length * 0.10))))
+    target_filled = max(0, min(length, target_filled))
+    if target_filled == 0:
+        return []
+    if target_filled == length:
+        return [length]
+
+    max_runs = min(target_filled, max(1, length // 2))
+    avg_runs = max(1, int(math.ceil(fill_prob * length / 3)))
+    runs = random.randint(1, min(max_runs, avg_runs + 1))
+    runs = min(runs, target_filled)
+
+    run_lengths = [1] * runs
+    remaining = target_filled - runs
+    for _ in range(remaining):
+        run_lengths[random.randrange(runs)] += 1
+    random.shuffle(run_lengths)
+    return run_lengths
+
+
+def _row_from_clues(length, clues):
+    if not clues:
+        return [0] * length
+    if sum(clues) + len(clues) - 1 >= length:
+        pattern = []
+        for idx, run in enumerate(clues):
+            pattern.extend([1] * run)
+            if idx < len(clues) - 1:
+                pattern.append(0)
+        if len(pattern) < length:
+            pattern.extend([0] * (length - len(pattern)))
+        return pattern[:length]
+
+    gaps = [0] * (len(clues) + 1)
+    available = length - sum(clues) - (len(clues) - 1)
+    for _ in range(available):
+        gaps[random.randrange(len(gaps))] += 1
+
+    pattern = []
+    for idx, run in enumerate(clues):
+        pattern.extend([0] * gaps[idx])
+        pattern.extend([1] * run)
+        if idx < len(clues) - 1:
+            pattern.append(0)
+    pattern.extend([0] * gaps[-1])
+    if len(pattern) < length:
+        pattern.extend([0] * (length - len(pattern)))
+    return pattern[:length]
+
+
+def _random_row_pattern(length, fill_prob):
+    return _row_from_clues(length, _random_clue_list(length, fill_prob))
+
+
+def _count_runs(line):
+    runs = 0
+    prev = 0
+    for cell in line:
+        if cell and not prev:
+            runs += 1
+        prev = cell
+    return runs
+
+
+def _partial_column_ok(prefix, rows, fill_prob):
+    filled = sum(prefix)
+    runs = _count_runs(prefix)
+    remaining = rows - len(prefix)
+    if runs > rows // 2:
+        return False
+    if remaining == 0:
+        return True
+
+    open_run = bool(prefix and prefix[-1] == 1)
+    finished_runs = runs - 1 if open_run else runs
+    max_extra_runs = (remaining + 1) // 2 if not open_run else 1 + (remaining - 1 + 1) // 2
+    if finished_runs + max_extra_runs > rows // 2:
+        return False
+
+    expected_fill = fill_prob * rows
+    if filled > expected_fill + remaining + 1:
+        return False
+    if filled + remaining < expected_fill - 1:
+        return False
+
+    if len(prefix) >= max(3, rows // 4):
+        frac = filled / len(prefix)
+        if frac < max(0.0, fill_prob - 0.30) or frac > min(1.0, fill_prob + 0.30):
+            return False
+    return True
+
+
+def _build_grid_by_rows(rows, cols, fill_prob):
+    for _ in range(20):
+        grid = []
+        for _ in range(rows):
+            row_tries = 0
+            while row_tries < 10:
+                row = _random_row_pattern(cols, fill_prob)
+                grid.append(row)
+                if all(
+                    _partial_column_ok([grid[r][c] for r in range(len(grid))], rows, fill_prob)
+                    for c in range(cols)
+                ):
+                    break
+                grid.pop()
+                row_tries += 1
+            else:
+                break
+        if len(grid) == rows:
+            return grid
+    return None
+
+
 def _make_grid(rows, cols, fill_prob):
-    return [
-        [1 if random.random() < fill_prob else 0 for _ in range(cols)]
-        for _ in range(rows)
-    ]
+    grid = _build_grid_by_rows(rows, cols, fill_prob)
+    if grid is not None:
+        return grid
+    return [_random_row_pattern(cols, fill_prob) for _ in range(rows)]
 
 def get_clues(line):
     clues, count = [], 0
@@ -112,10 +232,23 @@ def _gate1_clue_counts(rc, cc, rows, cols):
     return True
 
 # ── Gate 2: Python overlap analysis (fast approximation) ──────────────────────
+_pattern_count_cache = {}
+
 def _slack(clue, length):
     if not clue:
         return length
     return max(0, length - (sum(clue) + len(clue) - 1))
+
+def _pattern_count(clue, length):
+    if not clue:
+        return 1
+    key = (tuple(clue), length)
+    if key in _pattern_count_cache:
+        return _pattern_count_cache[key]
+    sl = _slack(clue, length)
+    count = math.comb(sl + len(clue), len(clue))
+    _pattern_count_cache[key] = count
+    return count
 
 def _forced_cells(clue, length):
     """Cells guaranteed filled by overlap logic for one line."""
@@ -148,6 +281,13 @@ def _python_score(rc, cc, rows, cols):
         sum(_ambiguity(c, rows) for c in cc)
     )
 
+    row_pattern_logs = [math.log1p(_pattern_count(c, cols)) for c in rc]
+    col_pattern_logs = [math.log1p(_pattern_count(c, rows)) for c in cc]
+    avg_log_patterns = (
+        sum(row_pattern_logs) + sum(col_pattern_logs)
+    ) / max(1, rows + cols)
+    norm_pattern = min(1.0, avg_log_patterns / 10.0)
+
     # Fragmentation: avg groups per line
     all_clues = rc + cc
     avg_groups = sum(len(c) for c in all_clues) / max(1, len(all_clues))
@@ -160,7 +300,12 @@ def _python_score(rc, cc, rows, cols):
     norm_slack = min(1.0, avg_slack / max(1, max(cols, rows)))
 
     norm_groups = min(1.0, avg_groups / max(1, max_groups))
-    approx_score = (1.0 - forced_ratio) * 0.5 + norm_slack * 0.3 + norm_groups * 0.2
+    approx_score = (
+        (1.0 - forced_ratio) * 0.45 +
+        norm_slack * 0.25 +
+        norm_groups * 0.2 +
+        norm_pattern * 0.1
+    )
 
     return forced_ratio, ambig, approx_score
 
@@ -199,6 +344,24 @@ def _gate2_python(rc, cc, rows, cols, diff):
         return False
 
     return True
+
+# ── Gate 2.5: Quick Python solve (fast reject before Prolog uniqueness) ───────
+def _gate2_5_quick_solve(grid, rc, cc, rows, cols, diff):
+    """Use a fast Python solve to filter candidates before expensive Prolog uniqueness."""
+    try:
+        from solver import solve_steps
+    except ImportError:
+        return True
+
+    max_steps = min(1200, 70 * diff + rows * cols * 2)
+    last_board = None
+    for info in solve_steps(rc, cc):
+        if info["step"] > max_steps:
+            return False
+        last_board = info["board"]
+    if last_board is None:
+        return False
+    return last_board == grid
 
 # ── Gate 3: Prolog difficulty score ───────────────────────────────────────────
 def _gate3_prolog_score(rc, cc, rows, cols, diff):
@@ -307,7 +470,7 @@ class PuzzleGenerator:
         d       = DIFFICULTY[difficulty]
         sampler = _AdaptiveSampler(d["fill_prob"])
 
-        attempt = g1_rej = g2_rej = g3_rej = g4_rej = 0
+        attempt = g1_rej = g2_rej = g3_rej = g3a_rej = g4_rej = 0
         update_interval = 5  # Update status every 5 attempts for real-time feedback
         
         # Adaptive timeout for Gate 4: larger puzzles + harder difficulties = shorter timeouts
@@ -340,7 +503,7 @@ class PuzzleGenerator:
             if attempt % update_interval == 0:
                 self.status = (
                     f"Searching… attempt {attempt} "
-                    f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G4:{g4_rej})"
+                    f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G3a:{g3a_rej} G4:{g4_rej})"
                 )
 
             grid = _make_grid(rows, cols, sampler.prob)
@@ -365,6 +528,11 @@ class PuzzleGenerator:
                     g3_rej += 1
                     continue
 
+            # Gate 2.5 — quick Python solve before Prolog uniqueness
+            if not _gate2_5_quick_solve(grid, rc, cc, rows, cols, difficulty):
+                g3a_rej += 1
+                continue
+
             # Gate 4 — Prolog uniqueness (slow, full solve with adaptive timeout)
             if not _gate4_unique(rc, cc, timeout_ms=gate4_timeout_ms):
                 g4_rej += 1
@@ -385,11 +553,12 @@ class PuzzleGenerator:
                     "g1_rejected": g1_rej,
                     "g2_rejected": g2_rej,
                     "g3_rejected": g3_rej,
+                    "g3a_rejected": g3a_rej,
                     "g4_rejected": g4_rej,
                 }
                 self.status = (
                     f"Ready! {d['name']} — {attempt} attempts "
-                    f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G4:{g4_rej})"
+                    f"(G1:{g1_rej} G2:{g2_rej} G3:{g3_rej} G3a:{g3a_rej} G4:{g4_rej})"
                 )
                 self.generating = False
                 callback(puzzle)
