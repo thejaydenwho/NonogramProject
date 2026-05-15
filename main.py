@@ -63,6 +63,7 @@ class Game:
         self.solver_step_count = 0
         self.solver_last_changes = []
         self.solver_status = ""
+        self.auto_next_puzzle = False
 
         # layout (computed once puzzle is known)
         self.cell_px  = 0
@@ -115,6 +116,7 @@ class Game:
         self.solver_step_count = 0
         self.solver_last_changes = []
         self.solver_status = ""
+        self.auto_next_puzzle = False
         self._compute_layout(rows, cols)
         self.state = STATE_PLAY
 
@@ -251,11 +253,17 @@ class Game:
                 else:
                     self.solver_paused = not self.solver_paused
                     self.solver_status = "Paused" if self.solver_paused else "Running"
+            elif event.key == pygame.K_h:
+                self._hint_step()
             elif event.key == pygame.K_n:
                 self._start_generation()
             elif event.key == pygame.K_s:
-                if self.solver is None:
-                    self._start_solver()
+                self.solver = None
+                self.solver_paused = False
+                self.solver_status = ""
+                self.auto_next_puzzle = False
+                self.typed = ""
+                self.state = STATE_COLS
 
         elif event.type == pygame.MOUSEMOTION:
             self._update_hover(event.pos)
@@ -315,8 +323,17 @@ class Game:
         self.solver_last_changes = []
         self.solver_status = "Running"
 
-    def _solver_step(self):
-        if self.solver is None or self.solver_paused or self.state != STATE_PLAY:
+    def _hint_step(self):
+        if not self.puzzle:
+            return
+        if self.solver is None:
+            self._start_solver()
+        self.auto_next_puzzle = False
+        self.solver_paused = True
+        self._solver_step(force=True)
+
+    def _solver_step(self, force=False):
+        if self.solver is None or (self.solver_paused and not force) or self.state != STATE_PLAY:
             return
         try:
             step = next(self.solver)
@@ -329,6 +346,10 @@ class Game:
             self._check_solved()
         except StopIteration:
             self.solver = None
+            if self.player == self.puzzle["grid"] and self.auto_next_puzzle:
+                self.auto_next_puzzle = False
+                self._start_generation()
+                return
             if self.player == self.puzzle["grid"]:
                 self.solver_status = "Solver completed"
             else:
@@ -403,7 +424,7 @@ class Game:
         cx, cy = WIN_W // 2, WIN_H // 2
         msg = self.font_lg.render("PUZZLE SOLVED!", True, BLACK)
         self.screen.blit(msg, msg.get_rect(center=(cx, cy - 50)))
-        hint1 = self.font_md.render("Press SPACE for new puzzle with same settings", True, (80, 80, 80))
+        hint1 = self.font_md.render("Press N for new puzzle with same settings", True, (80, 80, 80))
         self.screen.blit(hint1, hint1.get_rect(center=(cx, cy)))
         hint2 = self.font_md.render("Press S to change dimensions and difficulty", True, (80, 80, 80))
         self.screen.blit(hint2, hint2.get_rect(center=(cx, cy + 30)))
@@ -426,7 +447,7 @@ class Game:
             self.screen.blit(s2, (10, 48))
 
         # Controls hint
-        ctrl = self.font_xs.render("Space = start/pause solve, N = new puzzle", True, (160, 160, 160))
+        ctrl = self.font_xs.render("Space = start/pause solve, H = hint one tile, N = new puzzle, S = change dimensions", True, (160, 160, 160))
         self.screen.blit(ctrl, (WIN_W - ctrl.get_width() - 8, 8))
 
     # ── Puzzle rendering ──────────────────────────────────────────────────────
