@@ -172,22 +172,33 @@ def _partial_column_ok(prefix, rows, fill_prob):
 
 
 def _build_grid_by_rows(rows, cols, fill_prob):
+    target_filled = fill_prob * rows
     for _ in range(20):
         grid = []
+        col_fills = [0] * cols
         for _ in range(rows):
-            row_tries = 0
-            while row_tries < 10:
+            best_row = None
+            best_score = None
+            candidates = []
+            for _ in range(12):
                 row = _random_row_pattern(cols, fill_prob)
-                grid.append(row)
-                if all(
-                    _partial_column_ok([grid[r][c] for r in range(len(grid))], rows, fill_prob)
+                if not all(
+                    _partial_column_ok([grid[r][c] for r in range(len(grid))] + [row[c]], rows, fill_prob)
                     for c in range(cols)
                 ):
-                    break
-                grid.pop()
-                row_tries += 1
-            else:
+                    continue
+                score = sum(abs((col_fills[c] + row[c]) - target_filled) for c in range(cols))
+                candidates.append((score, row))
+
+            if not candidates:
                 break
+
+            candidates.sort(key=lambda item: item[0])
+            best_row = candidates[0][1]
+            grid.append(best_row)
+            for c, value in enumerate(best_row):
+                col_fills[c] += value
+
         if len(grid) == rows:
             return grid
     return None
