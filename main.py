@@ -9,7 +9,7 @@ os.environ["SDL_AUDIODRIVER"] = "dummy"
 import sys
 import pygame
 import threading
-from generator import PuzzleGenerator, DIFFICULTY
+from generator import PuzzleGenerator, DIFFICULTY, row_clues, col_clues
 import solver
 
 # ── Colours ────────────────────────────────────────────────────────────────────
@@ -24,9 +24,11 @@ BG         = (255, 255, 255)
 WIN_W, WIN_H = 800, 600
 
 # ── Input state machine ────────────────────────────────────────────────────────
+STATE_MENU   = "menu"
 STATE_COLS   = "cols"
 STATE_ROWS   = "rows"
 STATE_DIFF   = "diff"
+STATE_CUSTOM = "custom"
 STATE_WAIT   = "wait"    # generating in background
 STATE_PLAY   = "play"
 STATE_SOLVER = "solver"
@@ -49,12 +51,14 @@ class Game:
         self.gen      = PuzzleGenerator()
         self.puzzle   = None          # current puzzle dict
         self.player   = None          # 2-D list of 0/1
-        self.state    = STATE_COLS
+        self.state    = STATE_MENU
         self.typed    = ""            # current text input buffer
 
         self.ncols    = 0
         self.nrows    = 0
         self.diff     = 2
+        self.custom_mode = False
+        self.custom_grid = None
 
         self.solved_count = 0
 
@@ -64,6 +68,8 @@ class Game:
         self.solver_last_changes = []
         self.solver_status = ""
         self.auto_next_puzzle = False
+        self.solved_at = None
+        self.solved_delay_ms = 5000
 
         # layout (computed once puzzle is known)
         self.cell_px  = 0
@@ -117,6 +123,7 @@ class Game:
         self.solver_last_changes = []
         self.solver_status = ""
         self.auto_next_puzzle = False
+        self.solved_at = None
         self._compute_layout(rows, cols)
         self.state = STATE_PLAY
 
@@ -178,14 +185,19 @@ class Game:
                 if event.type == pygame.TEXTINPUT:
                     if event.text.isdigit():
                         self.typed += event.text
-                
-                # 2. Capture control keys (Backspace/Enter) using KEYDOWN
+
                 if event.type == pygame.KEYDOWN:
                     self._handle_input(event)
-                    
+
+            elif self.state == STATE_MENU:
+                self._handle_menu(event)
+
+            elif self.state == STATE_CUSTOM:
+                self._handle_custom_edit(event)
+
             elif self.state == STATE_PLAY:
                 self._handle_play(event)
-                
+
             elif self.state == STATE_SOLVED:
                 self._handle_solved(event)
 
@@ -195,7 +207,7 @@ class Game:
                     self.typed = self.typed[:-1]
                 elif event.key == pygame.K_RETURN:
                     self._commit_input()
-                
+
                 # This maps the PHYSICAL keys, ignoring NumLock/Shift/Unicode
                 numbers = {
                     pygame.K_0: "0", pygame.K_1: "1", pygame.K_2: "2", 
@@ -210,6 +222,38 @@ class Game:
                 }
                 if event.key in numbers:
                     self.typed += numbers[event.key]
+
+    def _handle_menu(self, event):
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_g:
+                    self.custom_mode = False
+                    self.typed = ""
+                    self.state = STATE_COLS
+                elif event.key == pygame.K_c:
+                    self.custom_mode = True
+                    self.typed = ""
+                    self.state = STATE_COLS
+                elif event.key == pygame.K_s:
+                    self.state = STATE_COLS
+
+    def _handle_custom_edit(self, event):
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_RETURN:
+                    self._finish_custom_puzzle()
+                elif event.key == pygame.K_BACKSPACE:
+                    self.custom_grid = [[0] * self.ncols for _ in range(self.nrows)]
+                elif event.key == pygame.K_s:
+                    self.state = STATE_MENU
+            elif event.type == pygame.MOUSEMOTION:
+                self._update_hover(event.pos)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                mx, my = event.pos
+                gx, gy = self.grid_x, self.grid_y
+                cp = self.cell_px
+                c = (mx - gx) // cp
+                r = (my - gy) // cp
+                if 0 <= r < self.nrows and 0 <= c < self.ncols:
+                    self.custom_grid[r][c] ^= 1
 
     def _commit_input(self):
         val = self.typed.strip()
@@ -233,7 +277,12 @@ class Game:
             except ValueError:
                 v = 5
             self.nrows = v
-            self.state = STATE_DIFF
+            if self.custom_mode:
+                self.custom_grid = [[0] * self.ncols for _ in range(self.nrows)]
+                self._compute_layout_size(self.nrows, self.ncols)
+                self.state = STATE_CUSTOM
+            else:
+                self.state = STATE_DIFF
 
         elif self.state == STATE_DIFF:
             try:
@@ -257,13 +306,13 @@ class Game:
                 self._hint_step()
             elif event.key == pygame.K_n:
                 self._start_generation()
-            elif event.key == pygame.K_s:
+            elif event.key == pygame.K_d:
                 self.solver = None
                 self.solver_paused = False
                 self.solver_status = ""
                 self.auto_next_puzzle = False
                 self.typed = ""
-                self.state = STATE_COLS
+                self.state = STATE_MENU
 
         elif event.type == pygame.MOUSEMOTION:
             self._update_hover(event.pos)
@@ -272,22 +321,21 @@ class Game:
             if self.solver is None:
                 self._toggle_cell(event.pos)
 
-    def _handle_solved(self, event):
-        if event.type == pygame.KEYDOWN:
-            if event.key == pygame.K_SPACE:
-                self._start_generation()
-            elif event.key == pygame.K_s:
-                self.typed = ""
-                self.state = STATE_COLS
-
     def _update_hover(self, pos):
         mx, my = pos
         gx, gy = self.grid_x, self.grid_y
         cp = self.cell_px
         c = (mx - gx) // cp
         r = (my - gy) // cp
-        cols = self.puzzle["cols"]
-        rows = self.puzzle["rows"]
+        if self.state == STATE_CUSTOM and self.custom_grid is not None:
+            cols = self.ncols
+            rows = self.nrows
+        elif self.puzzle is not None:
+            cols = self.puzzle["cols"]
+            rows = self.puzzle["rows"]
+        else:
+            self.hover_r = self.hover_c = -1
+            return
         if 0 <= r < rows and 0 <= c < cols:
             self.hover_r, self.hover_c = r, c
         else:
@@ -309,6 +357,57 @@ class Game:
         if self.player == self.puzzle["grid"]:
             self.solved_count += 1
             self.state = STATE_SOLVED
+            self.solved_at = pygame.time.get_ticks()
+
+    def _handle_solved(self, event):
+        if self.solved_at is None:
+            return
+        elapsed = pygame.time.get_ticks() - self.solved_at
+        if elapsed < self.solved_delay_ms:
+            return
+        if event.type == pygame.KEYDOWN:
+            if event.key == pygame.K_SPACE:
+                self._start_generation()
+            elif event.key == pygame.K_d:
+                self.typed = ""
+                self.state = STATE_MENU
+
+    def _finish_custom_puzzle(self):
+        if self.custom_grid is None:
+            return
+        puzzle = {
+            "grid":       [list(row) for row in self.custom_grid],
+            "row_clues":  row_clues(self.custom_grid),
+            "col_clues":  col_clues(self.custom_grid),
+            "rows":       self.nrows,
+            "cols":       self.ncols,
+            "difficulty": 0,
+            "diff_name":  "Custom",
+            "attempts":   0,
+            "g1_rejected": 0,
+            "g2_rejected": 0,
+            "g3_rejected": 0,
+            "g3a_rejected": 0,
+            "g4_rejected": 0,
+        }
+        self.custom_mode = False
+        self.custom_grid = None
+        self._load_puzzle(puzzle)
+
+    def _compute_layout_size(self, rows, cols):
+        avail_w = WIN_W - 20
+        avail_h = WIN_H - 60
+        row_margin = 60
+        col_margin = 60
+        grid_avail_w = avail_w - row_margin
+        grid_avail_h = avail_h - col_margin
+        cell_w = grid_avail_w // cols
+        cell_h = grid_avail_h // rows
+        self.cell_px = max(10, min(cell_w, cell_h))
+        grid_w = self.cell_px * cols
+        grid_h = self.cell_px * rows
+        self.grid_x = WIN_W - grid_w - 10
+        self.grid_y = WIN_H - grid_h - 10
 
     def _start_solver(self):
         if not self.puzzle:
@@ -358,6 +457,7 @@ class Game:
     # ── Generation ────────────────────────────────────────────────────────────
     def _start_generation(self):
         self.state = STATE_WAIT
+        self.solved_at = None
         self.gen.generate(
             self.nrows, self.ncols, self.diff,
             callback=self._deliver_puzzle
@@ -367,8 +467,12 @@ class Game:
     def _draw(self):
         self.screen.fill(BG)
 
-        if self.state in (STATE_COLS, STATE_ROWS, STATE_DIFF):
+        if self.state == STATE_MENU:
+            self._draw_menu()
+        elif self.state in (STATE_COLS, STATE_ROWS, STATE_DIFF):
             self._draw_setup()
+        elif self.state == STATE_CUSTOM:
+            self._draw_custom_edit()
         elif self.state == STATE_WAIT:
             self._draw_wait()
         elif self.state == STATE_PLAY:
@@ -377,6 +481,18 @@ class Game:
         elif self.state == STATE_SOLVED:
             self._draw_hud()
             self._draw_solved()
+
+    # ── Menu screen ───────────────────────────────────────────────────────────
+    def _draw_menu(self):
+        cx = WIN_W // 2
+        title = self.font_lg.render("NONOGRAM", True, BLACK)
+        self.screen.blit(title, title.get_rect(center=(cx, 80)))
+
+        prompt = self.font_md.render("Press G to generate a puzzle, C to create your own.", True, BLACK)
+        self.screen.blit(prompt, prompt.get_rect(center=(cx, 200)))
+
+        hint = self.font_sm.render("G = Generate   C = Custom puzzle", True, (80, 80, 80))
+        self.screen.blit(hint, hint.get_rect(center=(cx, 240)))
 
     # ── Setup screen ──────────────────────────────────────────────────────────
     def _draw_setup(self):
@@ -409,6 +525,34 @@ class Game:
         inp = self.font_md.render(self.typed + cursor, True, BLACK)
         self.screen.blit(inp, inp.get_rect(center=box.center))
 
+    # ── Custom puzzle editor ───────────────────────────────────────────────────
+    def _draw_custom_edit(self):
+        cx = WIN_W // 2
+        title = self.font_lg.render("Create Your Nonogram", True, BLACK)
+        self.screen.blit(title, title.get_rect(center=(cx, 60)))
+
+        hint = self.font_sm.render("Click cells to toggle pattern, Enter to finish, Backspace to reset.", True, (80, 80, 80))
+        self.screen.blit(hint, hint.get_rect(center=(cx, 100)))
+
+        if self.custom_grid is None:
+            return
+
+        rows = self.nrows
+        cols = self.ncols
+        cp = self.cell_px
+        gx, gy = self.grid_x, self.grid_y
+
+        for r in range(rows):
+            for c in range(cols):
+                rect = pygame.Rect(gx + c*cp, gy + r*cp, cp, cp)
+                color = LIGHT_GREY if self.custom_grid[r][c] else WHITE
+                pygame.draw.rect(self.screen, color, rect)
+                pygame.draw.rect(self.screen, GRID_LINE, rect, 1)
+
+        if 0 <= self.hover_r < rows and 0 <= self.hover_c < cols:
+            hover_rect = pygame.Rect(gx + self.hover_c*cp, gy + self.hover_r*cp, cp, cp)
+            pygame.draw.rect(self.screen, (0, 0, 255), hover_rect, 3)
+
     # ── Wait screen ───────────────────────────────────────────────────────────
     def _draw_wait(self):
         cx, cy = WIN_W // 2, WIN_H // 2
@@ -424,10 +568,22 @@ class Game:
         cx, cy = WIN_W // 2, WIN_H // 2
         msg = self.font_lg.render("PUZZLE SOLVED!", True, BLACK)
         self.screen.blit(msg, msg.get_rect(center=(cx, cy - 50)))
-        hint1 = self.font_md.render("Press N for new puzzle with same settings", True, (80, 80, 80))
-        self.screen.blit(hint1, hint1.get_rect(center=(cx, cy)))
-        hint2 = self.font_md.render("Press S to change dimensions and difficulty", True, (80, 80, 80))
-        self.screen.blit(hint2, hint2.get_rect(center=(cx, cy + 30)))
+
+        elapsed = 0
+        if self.solved_at is not None:
+            elapsed = pygame.time.get_ticks() - self.solved_at
+
+        if elapsed < self.solved_delay_ms:
+            remaining = max(0, (self.solved_delay_ms - elapsed) // 1000 + 1)
+            hint1 = self.font_md.render(f"Finished! Returning to options in {remaining}s", True, (80, 80, 80))
+            self.screen.blit(hint1, hint1.get_rect(center=(cx, cy)))
+            hint2 = self.font_md.render("Please wait...", True, (80, 80, 80))
+            self.screen.blit(hint2, hint2.get_rect(center=(cx, cy + 30)))
+        else:
+            hint1 = self.font_md.render("Press Space for new puzzle", True, (80, 80, 80))
+            self.screen.blit(hint1, hint1.get_rect(center=(cx, cy)))
+            hint2 = self.font_md.render("Press D to return to menu", True, (80, 80, 80))
+            self.screen.blit(hint2, hint2.get_rect(center=(cx, cy + 30)))
 
     # ── HUD ───────────────────────────────────────────────────────────────────
     def _draw_hud(self):
@@ -447,7 +603,7 @@ class Game:
             self.screen.blit(s2, (10, 48))
 
         # Controls hint
-        ctrl = self.font_xs.render("Space = start/pause solve, H = hint one tile, N = new puzzle, S = change dimensions", True, (160, 160, 160))
+        ctrl = self.font_xs.render("Space = start/pause solve, H = hint one tile, N = new puzzle, D = change dimensions", True, (160, 160, 160))
         self.screen.blit(ctrl, (WIN_W - ctrl.get_width() - 8, 8))
 
     # ── Puzzle rendering ──────────────────────────────────────────────────────
